@@ -4,6 +4,9 @@ Frames differ by model year. Old ones (e.g. 2017, Art API 1.07) refuse the libra
 socket upload and send thumbnails in a way the library cannot decode; for those we do
 what the SmartThings app does (one binary WebSocket frame). Newer ones use the library's
 standard methods. Each call tries one way and falls back to the other.
+
+Art API 4 and newer (2021+) only get the library's methods: a 2022 Frame never answers
+the binary requests, and after one its art service hangs until the TV loses power.
 """
 import concurrent.futures
 import ipaddress
@@ -35,6 +38,19 @@ def connect(ip):
     return _tv(ip, 30).art()
 
 
+_api_major = {}
+
+
+def _legacy(a):
+    """True unless the Frame's Art API is 4 or newer, where the binary requests hang it."""
+    if a.host not in _api_major:
+        try:
+            _api_major[a.host] = int(str(a.get_api_version()).split('.')[0])
+        except Exception:  # noqa: BLE001  unknown: keep trying both ways
+            return True
+    return _api_major[a.host] < 4
+
+
 def _send_image_binary(a, data, matte):
     if a.connection is None:
         a.open()
@@ -47,11 +63,12 @@ def _send_image_binary(a, data, matte):
 
 
 def send_image(a, data, matte='none'):
-    try:
-        return _send_image_binary(a, data, matte)
-    except Exception:  # noqa: BLE001  newer firmware: the library's own upload
-        a.close()
-        return a.upload(data, file_type='JPEG', matte=matte, portrait_matte=matte)
+    if _legacy(a):
+        try:
+            return _send_image_binary(a, data, matte)
+        except Exception:  # noqa: BLE001  newer firmware: the library's own upload
+            a.close()
+    return a.upload(data, file_type='JPEG', matte=matte, portrait_matte=matte)
 
 
 def _thumbnail_binary(a, content_id, timeout=30):
@@ -77,16 +94,17 @@ def _thumbnail_binary(a, content_id, timeout=30):
 
 
 def get_thumbnail(a, content_id):
-    try:
-        return _thumbnail_binary(a, content_id)
-    except Exception:  # noqa: BLE001  newer firmware: the library's own method
-        a.close()
-        data = a.get_thumbnail(content_id)
-        if isinstance(data, dict):
-            data = next(iter(data.values()))
-        if isinstance(data, list):
-            data = data[0]
-        return bytes(data)
+    if _legacy(a):
+        try:
+            return _thumbnail_binary(a, content_id)
+        except Exception:  # noqa: BLE001  newer firmware: the library's own method
+            a.close()
+    data = a.get_thumbnail(content_id)
+    if isinstance(data, dict):
+        data = next(iter(data.values()))
+    if isinstance(data, list):
+        data = data[0]
+    return bytes(data)
 
 
 def status(ip):
